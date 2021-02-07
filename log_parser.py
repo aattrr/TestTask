@@ -1,37 +1,28 @@
 import re
-import csv
-from urllib.parse import urlparse, parse_qsl, parse_qs
+from urllib.parse import urlparse, parse_qs
 import psycopg2
 
 
-def reader(file):
-    '''Парсинг лог-файла'''
-
-    # формируем регулярное выражение
+def read(file):
+    """Парсинг лог-файла."""
     regexp = r"^.*?(?P<datetime>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?" \
                   r"(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*?(?P<url>http.*)$"
 
-    # инициализируем список в котором будут содержаться извлечённые из лог-файла данные
-    data_list = []
-    # Компилируем объект регулярного выражения для последующего использования
+    parsed_logs = []
     pattern = re.compile(regexp)
     with open(file, 'r') as f:
         for line in f:
-            # ищем по заданному шаблону
             data = pattern.match(line)
-            # извлекаем из url параметры помещая их в словарь
             extracted_url = data.group('url')
-            parsed_url = urlparse('{}'.format(extracted_url))
+            parsed_url = urlparse(extracted_url)
+            query_params = parse_qs(parsed_url.query)
+            query_params = {param: value[0] for param, value in query_params.items()}
+            parsed_logs.append([data.group('datetime'), data.group('ip'), parsed_url.path, query_params])
+    return parsed_logs
 
-            k_dict = parse_qs(parsed_url.query)
-            data_list.append([data.group('datetime'), data.group('ip'), k_dict])
 
-    return data_list
-
-
-def write(data_list):
-    '''Подготовка данных и запись в базу'''
-    # Подключаемся к БД
+def write(parsed_logs):
+    """Подготовка данных и запись в базу."""
     con = psycopg2.connect(
         database="fish_db",
         user="aattrr",
@@ -40,40 +31,24 @@ def write(data_list):
         port="5432"
     )
     print("Database opened successfully")
-
     cur = con.cursor()
+    for item in parsed_logs:
+        datetime, ip, path, params = item
 
-    for item in data_list:
-        if item[2].get('user_id'):
-            user_id = item[2]['user_id'][0]
-        else:
-            user_id = None
-
-        if item[2].get('goods_id'):
-            goods_id = item[2]['goods_id'][0]
-        else:
-            goods_id = None
-
-        if item[2].get('amount'):
-            amount = item[2]['amount'][0]
-        else:
-            amount = None
-
-        if item[2].get('cart_id'):
-            cart_id = item[2]['cart_id'][0]
-        else:
-            cart_id = None
+        user_id = params.get('user_id')
+        goods_id = params.get('goods_id')
+        amount = params.get('amount')
+        cart_id = params.get('cart_id')
 
         cur.execute(
-            'INSERT INTO parsed_log (date_time, ip, product_id, amount, cart_id, customer_id) '
-            'VALUES (%s, %s, %s, %s, %s, %s)',
-            (item[0], item[1], goods_id, amount, cart_id, user_id)
+            'INSERT INTO parsed_log (ip, date_time, product_id, cart_id, url, amount, customer_id) '
+            'VALUES (%s, %s, %s, %s, %s, %s, %s)',
+            (ip, datetime, goods_id, cart_id, path, amount, user_id)
         )
-
     con.commit()
     con.close()
     print("Database closed")
 
 
 if __name__ == '__main__':
-    write(reader('logs.txt'))
+    write(read('logs.txt'))
